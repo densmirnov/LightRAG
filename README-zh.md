@@ -268,13 +268,14 @@ if __name__ == "__main__":
 | **embedding_func_max_async** | `int` | 最大并发异步嵌入进程数 | `16` |
 | **llm_model_func** | `callable` | LLM生成的函数 | `gpt_4o_mini_complete` |
 | **llm_model_name** | `str` | 用于生成的LLM模型名称 | `meta-llama/Llama-3.2-1B-Instruct` |
-| **summary_max_tokens** | `int` | 生成实体关系摘要时送给LLM的最大令牌数 | `30000`（由环境变量 SUMMARY_MAX_TOKENS 设置） |
+| **summary_context_size** | `int` | 合并实体关系摘要时送给LLM的最大令牌数 | `10000`（由环境变量 SUMMARY_MAX_CONTEXT 设置） |
+| **summary_max_tokens** | `int` | 合并实体关系描述的最大令牌数长度 | `500`（由环境变量 SUMMARY_MAX_TOKENS 设置） |
 | **llm_model_max_async** | `int` | 最大并发异步LLM进程数 | `4`（默认值由环境变量MAX_ASYNC更改） |
 | **llm_model_kwargs** | `dict` | LLM生成的附加参数 | |
 | **vector_db_storage_cls_kwargs** | `dict` | 向量数据库的附加参数，如设置节点和关系检索的阈值 | cosine_better_than_threshold: 0.2（默认值由环境变量COSINE_THRESHOLD更改） |
 | **enable_llm_cache** | `bool` | 如果为`TRUE`，将LLM结果存储在缓存中；重复的提示返回缓存的响应 | `TRUE` |
 | **enable_llm_cache_for_entity_extract** | `bool` | 如果为`TRUE`，将实体提取的LLM结果存储在缓存中；适合初学者调试应用程序 | `TRUE` |
-| **addon_params** | `dict` | 附加参数，例如`{"example_number": 1, "language": "Simplified Chinese", "entity_types": ["organization", "person", "geo", "event"]}`：设置示例限制、输出语言和文档处理的批量大小 | `example_number: 所有示例, language: English` |
+| **addon_params** | `dict` | 附加参数，例如`{"language": "Simplified Chinese", "entity_types": ["organization", "person", "location", "event"]}`：设置示例限制、输出语言和文档处理的批量大小 | language: English` |
 | **embedding_cache_config** | `dict` | 问答缓存的配置。包含三个参数：`enabled`：布尔值，启用/禁用缓存查找功能。启用时，系统将在生成新答案之前检查缓存的响应。`similarity_threshold`：浮点值（0-1），相似度阈值。当新问题与缓存问题的相似度超过此阈值时，将直接返回缓存的答案而不调用LLM。`use_llm_check`：布尔值，启用/禁用LLM相似度验证。启用时，在返回缓存答案之前，将使用LLM作为二次检查来验证问题之间的相似度。 | 默认：`{"enabled": False, "similarity_threshold": 0.95, "use_llm_check": False}` |
 
 </details>
@@ -598,9 +599,9 @@ if __name__ == "__main__":
 
 为了提高检索质量，可以根据更有效的相关性评分模型对文档进行重排序。`rerank.py`文件提供了三个Reranker提供商的驱动函数：
 
-*   **Cohere / vLLM**: `cohere_rerank`
-*   **Jina AI**: `jina_rerank`
-*   **Aliyun阿里云**: `ali_rerank`
+* **Cohere / vLLM**: `cohere_rerank`
+* **Jina AI**: `jina_rerank`
+* **Aliyun阿里云**: `ali_rerank`
 
 您可以将这些函数之一注入到LightRAG对象的`rerank_model_func`属性中。这将使LightRAG的查询功能能够使用注入的函数对检索到的文本块进行重新排序。有关详细用法，请参阅`examples/rerank_example.py`文件。
 

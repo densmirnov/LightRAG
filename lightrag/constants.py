@@ -11,10 +11,28 @@ DEFAULT_WOKERS = 2
 DEFAULT_MAX_GRAPH_NODES = 1000
 
 # Default values for extraction settings
-DEFAULT_SUMMARY_LANGUAGE = "English"  # Default language for summaries
-DEFAULT_FORCE_LLM_SUMMARY_ON_MERGE = 4
+DEFAULT_SUMMARY_LANGUAGE = "English"  # Default language for document processing
 DEFAULT_MAX_GLEANING = 1
-DEFAULT_SUMMARY_MAX_TOKENS = 30000  # Default maximum token size
+
+# Number of description fragments to trigger LLM summary
+DEFAULT_FORCE_LLM_SUMMARY_ON_MERGE = 8
+# Max description token size to trigger LLM summary
+DEFAULT_SUMMARY_MAX_TOKENS = 1200
+# Recommended LLM summary output length in tokens
+DEFAULT_SUMMARY_LENGTH_RECOMMENDED = 600
+# Maximum token size sent to LLM for summary
+DEFAULT_SUMMARY_CONTEXT_SIZE = 12000
+# Default entities to extract if ENTITY_TYPES is not specified in .env
+DEFAULT_ENTITY_TYPES = [
+    "Organization",
+    "Person",
+    "Equiment",
+    "Product",
+    "Technology",
+    "Location",
+    "Event",
+    "Category",
+]
 
 # Separator for graph fields
 GRAPH_FIELD_SEP = "<SEP>"
@@ -49,8 +67,12 @@ DEFAULT_MAX_PARALLEL_INSERT = 2  # Default maximum parallel insert operations
 DEFAULT_EMBEDDING_FUNC_MAX_ASYNC = 8  # Default max async for embedding functions
 DEFAULT_EMBEDDING_BATCH_NUM = 10  # Default batch size for embedding computations
 
-# gunicorn worker timeout(as default LLM request timeout if LLM_TIMEOUT is not set)
-DEFAULT_TIMEOUT = 150
+# Gunicorn worker timeout
+DEFAULT_TIMEOUT = 210
+
+# Default llm and embedding timeout
+DEFAULT_LLM_TIMEOUT = 180
+DEFAULT_EMBEDDING_TIMEOUT = 30
 
 # Logging configuration defaults
 DEFAULT_LOG_MAX_BYTES = 10485760  # Default 10MB

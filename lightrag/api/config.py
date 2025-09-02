@@ -30,12 +30,15 @@ from lightrag.constants import (
     DEFAULT_FORCE_LLM_SUMMARY_ON_MERGE,
     DEFAULT_MAX_ASYNC,
     DEFAULT_SUMMARY_MAX_TOKENS,
+    DEFAULT_SUMMARY_LENGTH_RECOMMENDED,
+    DEFAULT_SUMMARY_CONTEXT_SIZE,
     DEFAULT_SUMMARY_LANGUAGE,
     DEFAULT_EMBEDDING_FUNC_MAX_ASYNC,
     DEFAULT_EMBEDDING_BATCH_NUM,
     DEFAULT_OLLAMA_MODEL_NAME,
     DEFAULT_OLLAMA_MODEL_TAG,
     DEFAULT_RERANK_BINDING,
+    DEFAULT_ENTITY_TYPES,
 )
 
 # use the .env that is inside the current folder
@@ -119,10 +122,26 @@ def parse_args() -> argparse.Namespace:
         help=f"Maximum async operations (default: from env or {DEFAULT_MAX_ASYNC})",
     )
     parser.add_argument(
-        "--max-tokens",
+        "--summary-max-tokens",
         type=int,
         default=get_env_value("SUMMARY_MAX_TOKENS", DEFAULT_SUMMARY_MAX_TOKENS, int),
-        help=f"Maximum token size (default: from env or {DEFAULT_SUMMARY_MAX_TOKENS})",
+        help=f"Maximum token size for entity/relation summary(default: from env or {DEFAULT_SUMMARY_MAX_TOKENS})",
+    )
+    parser.add_argument(
+        "--summary-context-size",
+        type=int,
+        default=get_env_value(
+            "SUMMARY_CONTEXT_SIZE", DEFAULT_SUMMARY_CONTEXT_SIZE, int
+        ),
+        help=f"LLM Summary Context size (default: from env or {DEFAULT_SUMMARY_CONTEXT_SIZE})",
+    )
+    parser.add_argument(
+        "--summary-length-recommended",
+        type=int,
+        default=get_env_value(
+            "SUMMARY_LENGTH_RECOMMENDED", DEFAULT_SUMMARY_LENGTH_RECOMMENDED, int
+        ),
+        help=f"LLM Summary Context size (default: from env or {DEFAULT_SUMMARY_LENGTH_RECOMMENDED})",
     )
 
     # Logging configuration
@@ -333,6 +352,7 @@ def parse_args() -> argparse.Namespace:
     # Add environment variables that were previously read directly
     args.cors_origins = get_env_value("CORS_ORIGINS", "*")
     args.summary_language = get_env_value("SUMMARY_LANGUAGE", DEFAULT_SUMMARY_LANGUAGE)
+    args.entity_types = get_env_value("ENTITY_TYPES", DEFAULT_ENTITY_TYPES, list)
     args.whitelist_paths = get_env_value("WHITELIST_PATHS", "/health,/api/*")
 
     # For JWT Auth
