@@ -473,12 +473,12 @@ def priority_limit_async_func_call(
             nonlocal max_execution_timeout, max_task_duration
             if max_execution_timeout is None:
                 max_execution_timeout = (
-                    llm_timeout + 30
-                )  # LLM timeout + 30s buffer for network delays
+                    llm_timeout * 2
+                )  # Reserved timeout buffer for low-level retry
             if max_task_duration is None:
                 max_task_duration = (
-                    llm_timeout + 60
-                )  # LLM timeout + 1min buffer for execution phase
+                    llm_timeout * 2 + 15
+                )  # Reserved timeout buffer for health check phase
 
         queue = asyncio.PriorityQueue(maxsize=max_queue_size)
         tasks = set()
@@ -707,7 +707,7 @@ def priority_limit_async_func_call(
                     timeout_info.append(f"Health Check: {max_task_duration}s")
 
                 timeout_str = (
-                    f" (Timeouts: {', '.join(timeout_info)})" if timeout_info else ""
+                    f"(Timeouts: {', '.join(timeout_info)})" if timeout_info else ""
                 )
                 logger.info(
                     f"{queue_name}: {workers_needed} new workers initialized {timeout_str}"
@@ -1034,7 +1034,7 @@ async def handle_cache(
     args_hash,
     prompt,
     mode="default",
-    cache_type=None,
+    cache_type="unknown",
 ) -> str | None:
     """Generic cache handling function with flattened cache keys"""
     if hashing_kv is None:
@@ -1646,9 +1646,10 @@ def remove_think_tags(text: str) -> str:
 
 
 async def use_llm_func_with_cache(
-    input_text: str,
+    user_prompt: str,
     use_llm_func: callable,
     llm_response_cache: "BaseKVStorage | None" = None,
+    system_prompt: str | None = None,
     max_tokens: int = None,
     history_messages: list[dict[str, str]] = None,
     cache_type: str = "extract",
@@ -1677,7 +1678,10 @@ async def use_llm_func_with_cache(
         LLM response text
     """
     # Sanitize input text to prevent UTF-8 encoding errors for all LLM providers
-    safe_input_text = sanitize_text_for_encoding(input_text)
+    safe_user_prompt = sanitize_text_for_encoding(user_prompt)
+    safe_system_prompt = (
+        sanitize_text_for_encoding(system_prompt) if system_prompt else None
+    )
 
     # Sanitize history messages if provided
     safe_history_messages = None
@@ -1688,13 +1692,19 @@ async def use_llm_func_with_cache(
             if "content" in safe_msg:
                 safe_msg["content"] = sanitize_text_for_encoding(safe_msg["content"])
             safe_history_messages.append(safe_msg)
+        history = json.dumps(safe_history_messages, ensure_ascii=False)
+    else:
+        history = None
 
     if llm_response_cache:
-        if safe_history_messages:
-            history = json.dumps(safe_history_messages, ensure_ascii=False)
-            _prompt = history + "\n" + safe_input_text
-        else:
-            _prompt = safe_input_text
+        prompt_parts = []
+        if safe_user_prompt:
+            prompt_parts.append(safe_user_prompt)
+        if safe_system_prompt:
+            prompt_parts.append(safe_system_prompt)
+        if history:
+            prompt_parts.append(history)
+        _prompt = "\n".join(prompt_parts)
 
         arg_hash = compute_args_hash(_prompt)
         # Generate cache key for this LLM call
@@ -1725,7 +1735,9 @@ async def use_llm_func_with_cache(
         if max_tokens is not None:
             kwargs["max_tokens"] = max_tokens
 
-        res: str = await use_llm_func(safe_input_text, **kwargs)
+        res: str = await use_llm_func(
+            safe_user_prompt, system_prompt=safe_system_prompt, **kwargs
+        )
 
         res = remove_think_tags(res)
 
@@ -1755,7 +1767,9 @@ async def use_llm_func_with_cache(
         kwargs["max_tokens"] = max_tokens
 
     try:
-        res = await use_llm_func(safe_input_text, **kwargs)
+        res = await use_llm_func(
+            safe_user_prompt, system_prompt=safe_system_prompt, **kwargs
+        )
     except Exception as e:
         # Add [LLM func] prefix to error message
         error_msg = f"[LLM func] {str(e)}"
@@ -2588,3 +2602,45 @@ def get_pinyin_sort_key(text: str) -> str:
     else:
         # pypinyin not available, use simple string sorting
         return text.lower()
+
+
+def create_prefixed_exception(original_exception: Exception, prefix: str) -> Exception:
+    """
+    Safely create a prefixed exception that adapts to all error types.
+
+    Args:
+        original_exception: The original exception.
+        prefix: The prefix to add.
+
+    Returns:
+        A new exception with the prefix, maintaining the original exception type if possible.
+    """
+    try:
+        # Method 1: Try to reconstruct using original arguments.
+        if hasattr(original_exception, "args") and original_exception.args:
+            args = list(original_exception.args)
+            # Find the first string argument and prefix it. This is safer for
+            # exceptions like OSError where the first arg is an integer (errno).
+            found_str = False
+            for i, arg in enumerate(args):
+                if isinstance(arg, str):
+                    args[i] = f"{prefix}: {arg}"
+                    found_str = True
+                    break
+
+            # If no string argument is found, prefix the first argument's string representation.
+            if not found_str:
+                args[0] = f"{prefix}: {args[0]}"
+
+            return type(original_exception)(*args)
+        else:
+            # Method 2: If no args, try single parameter construction.
+            return type(original_exception)(f"{prefix}: {str(original_exception)}")
+    except (TypeError, ValueError, AttributeError) as construct_error:
+        # Method 3: If reconstruction fails, wrap it in a RuntimeError.
+        # This is the safest fallback, as attempting to create the same type
+        # with a single string can fail if the constructor requires multiple arguments.
+        return RuntimeError(
+            f"{prefix}: {type(original_exception).__name__}: {str(original_exception)} "
+            f"(Original exception could not be reconstructed: {construct_error})"
+        )

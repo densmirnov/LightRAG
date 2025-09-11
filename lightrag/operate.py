@@ -31,6 +31,7 @@ from .utils import (
     process_chunks_unified,
     build_file_path,
     safe_vdb_operation_with_exception,
+    create_prefixed_exception,
 )
 from .base import (
     BaseGraphStorage,
@@ -305,7 +306,7 @@ async def _summarize_descriptions(
         use_prompt,
         use_llm_func,
         llm_response_cache=llm_response_cache,
-        cache_type="extract",
+        cache_type="summary",
     )
     return summary
 
@@ -318,9 +319,8 @@ async def _handle_single_entity_extraction(
     if len(record_attributes) < 4 or "entity" not in record_attributes[0]:
         if len(record_attributes) > 1 and "entity" in record_attributes[0]:
             logger.warning(
-                f"Entity extraction failed in {chunk_key}: expecting 4 fields but got {len(record_attributes)}"
+                f"{chunk_key}: Entity `{record_attributes[1]}` extraction failed -- expecting 4 fields but got {len(record_attributes)}"
             )
-            logger.warning(f"Entity extracted: {record_attributes[1]}")
         return None
 
     try:
@@ -388,9 +388,8 @@ async def _handle_single_relationship_extraction(
     if len(record_attributes) < 5 or "relationship" not in record_attributes[0]:
         if len(record_attributes) > 1 and "relationship" in record_attributes[0]:
             logger.warning(
-                f"Relation extraction failed in {chunk_key}: expecting 5 fields but got {len(record_attributes)}"
+                f"{chunk_key}: Relation `{record_attributes[1]}` extraction failed -- expecting 5 fields but got {len(record_attributes)}"
             )
-            logger.warning(f"Relation extracted: {record_attributes[1]}")
         return None
 
     try:
@@ -838,6 +837,11 @@ async def _process_extraction_result(
     bracket_pattern = f"[）)](\\s*{re.escape(record_delimiter)}\\s*)[（(]"
     result = re.sub(bracket_pattern, ")\\1(", result)
 
+    if completion_delimiter not in result:
+        logger.warning(
+            f"{chunk_key}: Complete delimiter can not be found in extraction result"
+        )
+
     records = split_string_by_multi_markers(
         result,
         [record_delimiter, completion_delimiter],
@@ -870,6 +874,10 @@ async def _process_extraction_result(
             record = record.replace("<|>>", "<|>")
             # fix <<|> with <|>
             record = record.replace("<<|>", "<|>")
+            # fix <.|> with <|>
+            record = record.replace("<.|>", "<|>")
+            # fix <|.> with <|>
+            record = record.replace("<|.>", "<|>")
 
         record_attributes = split_string_by_multi_markers(record, [tuple_delimiter])
 
@@ -1391,9 +1399,9 @@ async def _merge_edges_then_upsert(
 
         # Log based on actual LLM usage
         if llm_was_used:
-            status_message = f"LLMmrg: `{src_id} - {tgt_id}` | {already_fragment}+{num_fragment-already_fragment}{dd_message}"
+            status_message = f"LLMmrg: `{src_id}`~`{tgt_id}` | {already_fragment}+{num_fragment-already_fragment}{dd_message}"
         else:
-            status_message = f"Merged: `{src_id} - {tgt_id}` | {already_fragment}+{num_fragment-already_fragment}{dd_message}"
+            status_message = f"Merged: `{src_id}`~`{tgt_id}` | {already_fragment}+{num_fragment-already_fragment}{dd_message}"
 
         logger.info(status_message)
         if pipeline_status is not None and pipeline_status_lock is not None:
@@ -1618,8 +1626,11 @@ async def merge_nodes_and_edges(
                             f"Failed to update pipeline status: {status_error}"
                         )
 
-                    # Re-raise the original exception
-                    raise
+                    # Re-raise the original exception with a prefix
+                    prefixed_exception = create_prefixed_exception(
+                        e, f"`{entity_name}`"
+                    )
+                    raise prefixed_exception from e
 
     # Create entity processing tasks
     entity_tasks = []
@@ -1749,8 +1760,11 @@ async def merge_nodes_and_edges(
                             f"Failed to update pipeline status: {status_error}"
                         )
 
-                    # Re-raise the original exception
-                    raise
+                    # Re-raise the original exception with a prefix
+                    prefixed_exception = create_prefixed_exception(
+                        e, f"{sorted_edge_key}"
+                    )
+                    raise prefixed_exception from e
 
     # Create relationship processing tasks
     edge_tasks = []
@@ -1903,7 +1917,6 @@ async def extract_entities(
     # add example's format
     examples = examples.format(**example_context_base)
 
-    entity_extract_prompt = PROMPTS["entity_extraction"]
     context_base = dict(
         tuple_delimiter=PROMPTS["DEFAULT_TUPLE_DELIMITER"],
         record_delimiter=PROMPTS["DEFAULT_RECORD_DELIMITER"],
@@ -1912,8 +1925,6 @@ async def extract_entities(
         examples=examples,
         language=language,
     )
-
-    continue_prompt = PROMPTS["entity_continue_extraction"].format(**context_base)
 
     processed_chunks = 0
     total_chunks = len(ordered_chunks)
@@ -1937,13 +1948,20 @@ async def extract_entities(
         cache_keys_collector = []
 
         # Get initial extraction
-        hint_prompt = entity_extract_prompt.format(
+        entity_extraction_system_prompt = PROMPTS[
+            "entity_extraction_system_prompt"
+        ].format(**{**context_base, "input_text": content})
+        entity_extraction_user_prompt = PROMPTS["entity_extraction_user_prompt"].format(
             **{**context_base, "input_text": content}
         )
+        entity_continue_extraction_user_prompt = PROMPTS[
+            "entity_continue_extraction_user_prompt"
+        ].format(**{**context_base, "input_text": content})
 
         final_result = await use_llm_func_with_cache(
-            hint_prompt,
+            entity_extraction_user_prompt,
             use_llm_func,
+            system_prompt=entity_extraction_system_prompt,
             llm_response_cache=llm_response_cache,
             cache_type="extract",
             chunk_id=chunk_key,
@@ -1951,7 +1969,9 @@ async def extract_entities(
         )
 
         # Store LLM cache reference in chunk (will be handled by use_llm_func_with_cache)
-        history = pack_user_ass_to_openai_messages(hint_prompt, final_result)
+        history = pack_user_ass_to_openai_messages(
+            entity_extraction_user_prompt, final_result
+        )
 
         # Process initial extraction with file path
         maybe_nodes, maybe_edges = await _process_extraction_result(
@@ -1966,16 +1986,15 @@ async def extract_entities(
         # Process additional gleaning results
         if entity_extract_max_gleaning > 0:
             glean_result = await use_llm_func_with_cache(
-                continue_prompt,
+                entity_continue_extraction_user_prompt,
                 use_llm_func,
+                system_prompt=entity_extraction_system_prompt,
                 llm_response_cache=llm_response_cache,
                 history_messages=history,
                 cache_type="extract",
                 chunk_id=chunk_key,
                 cache_keys_collector=cache_keys_collector,
             )
-
-            history += pack_user_ass_to_openai_messages(continue_prompt, glean_result)
 
             # Process gleaning result separately with file path
             glean_nodes, glean_edges = await _process_extraction_result(
@@ -2066,11 +2085,14 @@ async def extract_entities(
         if pending:
             await asyncio.wait(pending)
 
-        # Re-raise the first exception to notify the caller
-        raise first_exception
+        # Add progress prefix to the exception message
+        progress_prefix = f"Chunks[{processed_chunks+1}/{total_chunks}]"
+
+        # Re-raise the original exception with a prefix
+        prefixed_exception = create_prefixed_exception(first_exception, progress_prefix)
+        raise prefixed_exception from first_exception
 
     # If all tasks completed successfully, chunk_results already contains the results
-
     # Return the chunk_results for later processing in merge_nodes_and_edges
     return chunk_results
 
@@ -2192,6 +2214,7 @@ async def kg_query(
         query,
         system_prompt=sys_prompt,
         stream=query_param.stream,
+        enable_cot=True,
     )
     if isinstance(response, str) and len(response) > len(sys_prompt):
         response = (
@@ -2989,7 +3012,7 @@ async def _get_node_data(
 ):
     # get similar entities
     logger.info(
-        f"Query nodes: {query}, top_k: {query_param.top_k}, cosine: {entities_vdb.cosine_better_than_threshold}"
+        f"Query nodes: {query} (top_k:{query_param.top_k}, cosine:{entities_vdb.cosine_better_than_threshold})"
     )
 
     results = await entities_vdb.query(query, top_k=query_param.top_k)
@@ -3265,7 +3288,7 @@ async def _get_edge_data(
     query_param: QueryParam,
 ):
     logger.info(
-        f"Query edges: {keywords}, top_k: {query_param.top_k}, cosine: {relationships_vdb.cosine_better_than_threshold}"
+        f"Query edges: {keywords} (top_k:{query_param.top_k}, cosine:{relationships_vdb.cosine_better_than_threshold})"
     )
 
     results = await relationships_vdb.query(keywords, top_k=query_param.top_k)
@@ -3714,6 +3737,7 @@ async def naive_query(
         query,
         system_prompt=sys_prompt,
         stream=query_param.stream,
+        enable_cot=True,
     )
 
     if isinstance(response, str) and len(response) > len(sys_prompt):
