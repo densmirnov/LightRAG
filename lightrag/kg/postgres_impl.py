@@ -74,6 +74,12 @@ class PostgreSQLDB:
         self.hnsw_ef = config.get("hnsw_ef")
         self.ivfflat_lists = config.get("ivfflat_lists")
 
+        # Server settings
+        self.server_settings = config.get("server_settings")
+
+        # Statement LRU cache size (keep as-is, allow None for optional configuration)
+        self.statement_cache_size = config.get("statement_cache_size")
+
         if self.user is None or self.password is None or self.database is None:
             raise ValueError("Missing database user, password, or database")
 
@@ -160,6 +166,15 @@ class PostgreSQLDB:
                 "max_size": self.max,
             }
 
+            # Only add statement_cache_size if it's configured
+            if self.statement_cache_size is not None:
+                connection_params["statement_cache_size"] = int(
+                    self.statement_cache_size
+                )
+                logger.info(
+                    f"PostgreSQL, statement LRU cache size set as: {self.statement_cache_size}"
+                )
+
             # Add SSL configuration if provided
             ssl_context = self._create_ssl_context()
             if ssl_context is not None:
@@ -172,6 +187,24 @@ class PostgreSQLDB:
                 elif self.ssl_mode.lower() == "disable":
                     connection_params["ssl"] = False
                 logger.info(f"PostgreSQL, SSL mode set to: {self.ssl_mode}")
+
+            # Add server settings if provided
+            if self.server_settings:
+                try:
+                    settings = {}
+                    # The format is expected to be a query string, e.g., "key1=value1&key2=value2"
+                    pairs = self.server_settings.split("&")
+                    for pair in pairs:
+                        if "=" in pair:
+                            key, value = pair.split("=", 1)
+                            settings[key] = value
+                    if settings:
+                        connection_params["server_settings"] = settings
+                        logger.info(f"PostgreSQL, Server settings applied: {settings}")
+                except Exception as e:
+                    logger.warning(
+                        f"PostgreSQL, Failed to parse server_settings: {self.server_settings}, error: {e}"
+                    )
 
             self.pool = await asyncpg.create_pool(**connection_params)  # type: ignore
 
@@ -828,8 +861,8 @@ class PostgreSQLDB:
 
                     # Execute the migration
                     alter_sql = f"""
-                    ALTER TABLE {migration['table']}
-                    ALTER COLUMN {migration['column']} TYPE {migration['new_type']}
+                    ALTER TABLE {migration["table"]}
+                    ALTER COLUMN {migration["column"]} TYPE {migration["new_type"]}
                     """
 
                     await self.execute(alter_sql)
@@ -1368,6 +1401,15 @@ class ClientManager:
                     config.get("postgres", "ivfflat_lists", fallback="100"),
                 )
             ),
+            # Server settings for Supabase
+            "server_settings": os.environ.get(
+                "POSTGRES_SERVER_SETTINGS",
+                config.get("postgres", "server_options", fallback=None),
+            ),
+            "statement_cache_size": os.environ.get(
+                "POSTGRES_STATEMENT_CACHE_SIZE",
+                config.get("postgres", "statement_cache_size", fallback=None),
+            ),
         }
 
     @classmethod
@@ -1750,6 +1792,7 @@ class PGKVStorage(BaseKVStorage):
                 _data = {
                     "id": k,
                     "content": v["content"],
+                    "doc_name": v.get("file_path", ""),  # Map file_path to doc_name
                     "workspace": self.workspace,
                 }
                 await self.db.execute(upsert_sql, _data)
@@ -4588,7 +4631,8 @@ TABLES = {
 
 SQL_TEMPLATES = {
     # SQL for KVStorage
-    "get_by_id_full_docs": """SELECT id, COALESCE(content, '') as content
+    "get_by_id_full_docs": """SELECT id, COALESCE(content, '') as content,
+                                COALESCE(doc_name, '') as file_path
                                 FROM LIGHTRAG_DOC_FULL WHERE workspace=$1 AND id=$2
                             """,
     "get_by_id_text_chunks": """SELECT id, tokens, COALESCE(content, '') as content,
@@ -4603,7 +4647,8 @@ SQL_TEMPLATES = {
                                 EXTRACT(EPOCH FROM update_time)::BIGINT as update_time
                                 FROM LIGHTRAG_LLM_CACHE WHERE workspace=$1 AND id=$2
                                """,
-    "get_by_ids_full_docs": """SELECT id, COALESCE(content, '') as content
+    "get_by_ids_full_docs": """SELECT id, COALESCE(content, '') as content,
+                                 COALESCE(doc_name, '') as file_path
                                  FROM LIGHTRAG_DOC_FULL WHERE workspace=$1 AND id IN ({ids})
                             """,
     "get_by_ids_text_chunks": """SELECT id, tokens, COALESCE(content, '') as content,
@@ -4639,10 +4684,12 @@ SQL_TEMPLATES = {
                                  FROM LIGHTRAG_FULL_RELATIONS WHERE workspace=$1 AND id IN ({ids})
                                 """,
     "filter_keys": "SELECT id FROM {table_name} WHERE workspace=$1 AND id IN ({ids})",
-    "upsert_doc_full": """INSERT INTO LIGHTRAG_DOC_FULL (id, content, workspace)
-                        VALUES ($1, $2, $3)
+    "upsert_doc_full": """INSERT INTO LIGHTRAG_DOC_FULL (id, content, doc_name, workspace)
+                        VALUES ($1, $2, $3, $4)
                         ON CONFLICT (workspace,id) DO UPDATE
-                           SET content = $2, update_time = CURRENT_TIMESTAMP
+                           SET content = $2,
+                               doc_name = $3,
+                               update_time = CURRENT_TIMESTAMP
                        """,
     "upsert_llm_response_cache": """INSERT INTO LIGHTRAG_LLM_CACHE(workspace,id,original_prompt,return_value,chunk_id,cache_type,queryparam)
                                       VALUES ($1, $2, $3, $4, $5, $6, $7)
